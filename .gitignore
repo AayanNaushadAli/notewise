@@ -1,0 +1,42 @@
+# Environment variables and secrets
+.env
+.env.local
+*.env
+*.pem
+*.key
+
+# Node / Backend
+backend/node_modules/
+backend/dist/
+backend/build/
+backend/npm-debug.log*
+backend/yarn-debug.log*
+backend/yarn-error.log*
+
+# Android / Gradle build outputs
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+build/
+*.apk
+*.ap_
+*.aab
+*.dex
+android/local.properties
+android/.cxx/
+android/captures/
+android/.externalNativeBuild/
+
+# IDE and Editor files
+.idea/
+android/.idea/
+*.iml
+android/*.iml
+android/app/*.iml
+.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini

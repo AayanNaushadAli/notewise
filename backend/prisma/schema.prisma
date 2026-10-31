@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String?
+  name         String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  folders      Folder[]
+  notebooks    Notebook[]
+  devices      Device[]
+
+  @@map("users")
+}
+
+model Device {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceName String   @map("device_name")
+  deviceType String   @map("device_type") // android, web, tablet
+  lastSyncAt DateTime @default(now()) @map("last_sync_at")
+
+  @@map("devices")
+}
+
+model Folder {
+  id        String     @id @default(uuid())
+  userId    String     @map("user_id")
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentId  String?    @map("parent_id")
+  parent    Folder?    @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]   @relation("FolderHierarchy")
+  name      String
+  colorHex  String     @default("#3B82F6") @map("color_hex")
+  isDeleted Boolean    @default(false) @map("is_deleted")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  notebooks Notebook[]
+
+  @@map("folders")
+}
+
+model Notebook {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId    String?  @map("folder_id")
+  folder      Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  title       String
+  coverColor  String   @default("#1E3A8A") @map("cover_color")
+  isPinned    Boolean  @default(false) @map("is_pinned")
+  isDeleted   Boolean  @default(false) @map("is_deleted")
+  version     Int      @default(1)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  pages       Page[]
+
+  @@index([userId, updatedAt])
+  @@map("notebooks")
+}
+
+model Page {
+  id               String   @id @default(uuid())
+  notebookId       String   @map("notebook_id")
+  notebook         Notebook @relation(fields: [notebookId], references: [id], onDelete: Cascade)
+  pageIndex        Int      @map("page_index")
+  templateType     String   @default("ruled") @map("template_type") // blank, ruled, grid, dots, cornell
+  backgroundColor  String   @default("#FFFFFF") @map("background_color")
+  pdfBackgroundUrl String?  @map("pdf_background_url")
+  strokeData       Json?    @map("stroke_data") // Compressed vector path JSON
+  isDeleted        Boolean  @default(false) @map("is_deleted")
+  version          Int      @default(1)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@unique([notebookId, pageIndex])
+  @@index([notebookId, updatedAt])
+  @@map("pages")
+}
+

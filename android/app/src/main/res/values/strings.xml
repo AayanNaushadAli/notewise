@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Notewise</string>
+    <string name="new_notebook">New Notebook</string>
+    <string name="my_notes">My Notes</string>
+    <string name="search_notes">Search notes &amp; folders…</string>
+    <string name="cloud_sync">Cloud Sync</string>
+</resources>
+
