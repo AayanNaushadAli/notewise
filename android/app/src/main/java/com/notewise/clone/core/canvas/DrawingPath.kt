@@ -1,10 +1,9 @@
 package com.notewise.clone.core.canvas
 
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import java.util.UUID
+import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -16,7 +15,8 @@ data class DrawingPath(
     var color: Int,
     var strokeWidth: Float,
     val createdAt: Long = System.currentTimeMillis(),
-    var audioTimestampMs: Long? = null
+    var audioTimestampMs: Long? = null,
+    var isLocked: Boolean = false
 ) {
     val bounds: RectF = RectF()
     private var cachedPath: Path? = null
@@ -33,6 +33,7 @@ data class DrawingPath(
     }
 
     fun translate(dx: Float, dy: Float) {
+        if (isLocked) return
         for (i in 0 until points.size) {
             val p = points[i]
             points[i] = p.copy(x = p.x + dx, y = p.y + dy)
@@ -66,8 +67,8 @@ data class DrawingPath(
                         // Arrowhead
                         val angle = atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())
                         val arrowLen = (strokeWidth * 3.5f).coerceAtLeast(24f)
-                        val angle1 = angle - Math.PI / 6
-                        val angle2 = angle + Math.PI / 6
+                        val angle1 = angle - PI / 6
+                        val angle2 = angle + PI / 6
                         path.lineTo((end.x - arrowLen * cos(angle1)).toFloat(), (end.y - arrowLen * sin(angle1)).toFloat())
                         path.moveTo(end.x, end.y)
                         path.lineTo((end.x - arrowLen * cos(angle2)).toFloat(), (end.y - arrowLen * sin(angle2)).toFloat())
@@ -83,6 +84,21 @@ data class DrawingPath(
                         path.moveTo(midX, top)
                         path.lineTo(right, bottom)
                         path.lineTo(left, bottom)
+                        path.close()
+                    }
+                    ShapeType.STAR -> {
+                        val cx = (left + right) / 2
+                        val cy = (top + bottom) / 2
+                        val rOuter = maxOf((right - left) / 2, (bottom - top) / 2)
+                        val rInner = rOuter * 0.45f
+                        val pointsCount = 5
+                        for (i in 0 until pointsCount * 2) {
+                            val r = if (i % 2 == 0) rOuter else rInner
+                            val angle = i * PI / pointsCount - PI / 2
+                            val x = (cx + r * cos(angle)).toFloat()
+                            val y = (cy + r * sin(angle)).toFloat()
+                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                        }
                         path.close()
                     }
                 }
@@ -131,6 +147,7 @@ data class DrawingPath(
      * Checks if an eraser point touches this stroke
      */
     fun intersects(x: Float, y: Float, radius: Float): Boolean {
+        if (isLocked) return false
         if (!bounds.intersects(x - radius, y - radius, x + radius, y + radius)) {
             return false
         }
@@ -149,7 +166,7 @@ data class DrawingPath(
      * Checks if stroke center is inside a lasso polygon
      */
     fun isInsidePolygon(polygonPoints: List<DrawingPoint>): Boolean {
-        if (points.isEmpty()) return false
+        if (isLocked || points.isEmpty()) return false
         val cx = bounds.centerX()
         val cy = bounds.centerY()
 

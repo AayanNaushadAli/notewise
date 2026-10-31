@@ -17,7 +17,6 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import com.notewise.clone.core.template.PageTemplate
 import com.notewise.clone.core.template.TemplateRenderer
-import kotlin.math.hypot
 
 class DrawingCanvasView @JvmOverloads constructor(
     context: Context,
@@ -37,6 +36,8 @@ class DrawingCanvasView @JvmOverloads constructor(
     var onUndoRedoStateChanged: ((canUndo: Boolean, canRedo: Boolean) -> Unit)? = null
     var onTextToolTapped: ((x: Float, y: Float) -> Unit)? = null
     var onStrokeTapped: ((DrawingPath) -> Unit)? = null
+    var onColorSampled: ((Int) -> Unit)? = null
+    var onEraserFinished: (() -> Unit)? = null
     var currentAudioTimestampMsProvider: (() -> Long?)? = null
 
     // Transform matrix for panning & zooming
@@ -49,6 +50,14 @@ class DrawingCanvasView @JvmOverloads constructor(
     var isStylusOnlyMode = false
     private var isStylusActive = false
 
+    // Smart Features
+    var isAutoShapeEnabled = true
+    var isScribbleToEraseEnabled = true
+    var isEraserAutoDeselect = false
+
+    // Multi-Ruler Guide
+    val rulerGuide = RulerGuide()
+
     // Active in-progress stroke
     private var activePath: DrawingPath? = null
     private var shapeStartPoint: DrawingPoint? = null
@@ -60,10 +69,6 @@ class DrawingCanvasView @JvmOverloads constructor(
     private var isDraggingSelection = false
     private var lastDragX = 0f
     private var lastDragY = 0f
-
-    // Ruler tool guide
-    var isRulerEnabled: Boolean = false
-    var rulerY: Float = 400f
 
     // Paints
     private val penPaint = Paint().apply {
@@ -118,11 +123,10 @@ class DrawingCanvasView @JvmOverloads constructor(
         color = Color.argb(25, 37, 99, 235)
     }
 
-    private val rulerPaint = Paint().apply {
+    private val lockBadgePaint = Paint().apply {
         isAntiAlias = true
-        style = Paint.Style.STROKE
-        color = Color.argb(120, 59, 130, 246)
-        strokeWidth = 4f
+        color = Color.argb(180, 220, 38, 38)
+        textSize = 24f
     }
 
     private val templateRenderer = TemplateRenderer()
@@ -178,10 +182,8 @@ class DrawingCanvasView @JvmOverloads constructor(
         }
         templateRenderer.render(canvas, width.toFloat(), height.toFloat(), currentTemplate)
 
-        // 2. Draw Ruler Guide if enabled
-        if (isRulerEnabled) {
-            canvas.drawLine(0f, rulerY, width.toFloat(), rulerY, rulerPaint)
-        }
+        // 2. Draw Interactive Multi-Ruler Guide
+        rulerGuide.render(canvas)
 
         // 3. Draw Highlighters (bottom layer)
         for (stroke in strokes) {
@@ -216,6 +218,11 @@ class DrawingCanvasView @JvmOverloads constructor(
                     }
                 }
                 else -> {}
+            }
+
+            // Lock indicator badge if stroke is locked and lasso is active
+            if (stroke.isLocked && currentTool is DrawingTool.Lasso) {
+                canvas.drawText("🔒", stroke.bounds.left, stroke.bounds.top, lockBadgePaint)
             }
         }
 
@@ -256,7 +263,7 @@ class DrawingCanvasView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // Multi-touch gestures (Pinch-to-zoom / Pan with 2 fingers)
+        // Multi-touch gestures (Pinch-to-zoom / Pan / Ruler adjust with 2 fingers)
         if (event.pointerCount > 1) {
             if (activePath != null) {
                 activePath = null
@@ -268,7 +275,6 @@ class DrawingCanvasView @JvmOverloads constructor(
 
         val toolType = event.getToolType(0)
         if (isStylusOnlyMode && toolType != MotionEvent.TOOL_TYPE_STYLUS) {
-            // Reject finger touch when stylus mode is active
             return false
         }
         if (toolType == MotionEvent.TOOL_TYPE_STYLUS) {
@@ -279,9 +285,15 @@ class DrawingCanvasView @JvmOverloads constructor(
         drawMatrix.invert(inverseMatrix)
         val pts = floatArrayOf(event.x, event.y)
         inverseMatrix.mapPoints(pts)
-        val docX = pts[0]
-        val docY = pts[1]
+        var docX = pts[0]
+        var docY = pts[1]
         val pressure = if (toolType == MotionEvent.TOOL_TYPE_STYLUS) event.pressure else 1.0f
+
+        // Snap to ruler edge if active
+        rulerGuide.snapToEdge(docX, docY)?.let { snapped ->
+            docX = snapped.first
+            docY = snapped.second
+        }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -304,12 +316,18 @@ class DrawingCanvasView @JvmOverloads constructor(
         lastDragX = x
         lastDragY = y
 
+        // EyeDropper color sampling
+        if (currentTool is DrawingTool.EyeDropper) {
+            val sampled = sampleColorAt(x, y)
+            onColorSampled?.invoke(sampled)
+            return
+        }
+
         // Check if user tapped inside existing selection box to drag it
         if (selectedStrokes.isNotEmpty() && selectionBounds.contains(x, y)) {
             isDraggingSelection = true
             return
         } else if (selectedStrokes.isNotEmpty()) {
-            // Tapped outside selection -> deselect
             selectedStrokes.clear()
             invalidate()
         }
@@ -369,6 +387,7 @@ class DrawingCanvasView @JvmOverloads constructor(
             is DrawingTool.Text -> {
                 onTextToolTapped?.invoke(x, y)
             }
+            else -> {}
         }
     }
 
@@ -433,12 +452,45 @@ class DrawingCanvasView @JvmOverloads constructor(
             return
         }
 
+        if (currentTool is DrawingTool.Eraser) {
+            if (isEraserAutoDeselect) {
+                onEraserFinished?.invoke()
+            }
+            return
+        }
+
         when (currentTool) {
             is DrawingTool.Pen, is DrawingTool.Highlighter, is DrawingTool.Shape -> {
                 activePath?.let { stroke ->
                     if (currentTool !is DrawingTool.Shape) {
                         stroke.points.add(DrawingPoint(x, y, pressure))
                     }
+
+                    // 1. Check for Scribble-to-Erase gesture
+                    if (isScribbleToEraseEnabled && currentTool is DrawingTool.Pen) {
+                        val scribbleBox = SmartStrokeProcessor.isScribbleToErase(stroke.points)
+                        if (scribbleBox != null) {
+                            eraseInRect(scribbleBox)
+                            activePath = null
+                            invalidate()
+                            return
+                        }
+                    }
+
+                    // 2. Check for AI Shape Snapping
+                    if (isAutoShapeEnabled && currentTool is DrawingTool.Pen) {
+                        val shapeResult = SmartStrokeProcessor.detectShape(stroke.points)
+                        if (shapeResult != null && shapeResult.confidence >= 0.75f) {
+                            stroke.tool = DrawingTool.Shape(
+                                shapeType = shapeResult.shapeType,
+                                color = stroke.color,
+                                width = stroke.strokeWidth
+                            )
+                            stroke.points.clear()
+                            stroke.points.addAll(shapeResult.snappedPoints)
+                        }
+                    }
+
                     stroke.invalidateCache()
                     strokes.add(stroke)
                     undoRedoManager.recordAction(UndoRedoManager.CanvasAction.AddStroke(stroke))
@@ -453,7 +505,6 @@ class DrawingCanvasView @JvmOverloads constructor(
                 if (lassoPoints.size > 2) {
                     finishLassoSelection()
                 } else {
-                    // Tap detection for stroke playback seek
                     val tapped = strokes.find { it.intersects(x, y, 20f) }
                     tapped?.let { onStrokeTapped?.invoke(it) }
                 }
@@ -467,13 +518,12 @@ class DrawingCanvasView @JvmOverloads constructor(
     private fun finishLassoSelection() {
         selectedStrokes.clear()
         for (stroke in strokes) {
-            if (stroke.isInsidePolygon(lassoPoints)) {
+            if (!stroke.isLocked && stroke.isInsidePolygon(lassoPoints)) {
                 selectedStrokes.add(stroke)
             }
         }
 
         if (selectedStrokes.isNotEmpty()) {
-            // Compute combined selection bounding box
             selectionBounds.set(selectedStrokes[0].bounds)
             for (i in 1 until selectedStrokes.size) {
                 selectionBounds.union(selectedStrokes[i].bounds)
@@ -482,10 +532,20 @@ class DrawingCanvasView @JvmOverloads constructor(
         }
     }
 
+    fun lockSelectedStrokes(locked: Boolean) {
+        for (stroke in selectedStrokes) {
+            stroke.isLocked = locked
+        }
+        selectedStrokes.clear()
+        onStrokeChangedListener?.invoke()
+        invalidate()
+    }
+
     fun deleteSelectedStrokes() {
         if (selectedStrokes.isEmpty()) return
         val removed = mutableListOf<Pair<DrawingPath, Int>>()
         for (stroke in selectedStrokes) {
+            if (stroke.isLocked) continue
             val idx = strokes.indexOf(stroke)
             if (idx != -1) {
                 removed.add(stroke to idx)
@@ -503,8 +563,10 @@ class DrawingCanvasView @JvmOverloads constructor(
 
     fun recolorSelectedStrokes(newColor: Int) {
         for (stroke in selectedStrokes) {
-            stroke.color = newColor
-            stroke.invalidateCache()
+            if (!stroke.isLocked) {
+                stroke.color = newColor
+                stroke.invalidateCache()
+            }
         }
         onStrokeChangedListener?.invoke()
         invalidate()
@@ -527,7 +589,6 @@ class DrawingCanvasView @JvmOverloads constructor(
         }
         selectedStrokes.clear()
         selectedStrokes.addAll(duplicated)
-        // Update selection bounds
         selectionBounds.set(selectedStrokes[0].bounds)
         for (i in 1 until selectedStrokes.size) {
             selectionBounds.union(selectedStrokes[i].bounds)
@@ -538,6 +599,58 @@ class DrawingCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun insertSticker(stickerStrokes: List<DrawingPath>, atX: Float, atY: Float) {
+        if (stickerStrokes.isEmpty()) return
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        for (s in stickerStrokes) {
+            for (p in s.points) {
+                minX = minOf(minX, p.x)
+                minY = minOf(minY, p.y)
+            }
+        }
+        val offsetX = atX - minX
+        val offsetY = atY - minY
+
+        val added = mutableListOf<Pair<DrawingPath, Int>>()
+        for (s in stickerStrokes) {
+            val pts = s.points.map { it.copy(x = it.x + offsetX, y = it.y + offsetY) }.toMutableList()
+            val clone = DrawingPath(
+                points = pts,
+                tool = s.tool,
+                color = s.color,
+                strokeWidth = s.strokeWidth
+            )
+            val idx = strokes.size
+            strokes.add(clone)
+            added.add(clone to idx)
+            undoRedoManager.recordAction(UndoRedoManager.CanvasAction.AddStroke(clone))
+        }
+        notifyUndoRedoState()
+        onStrokeChangedListener?.invoke()
+        invalidate()
+    }
+
+    private fun eraseInRect(rect: RectF) {
+        val removed = mutableListOf<Pair<DrawingPath, Int>>()
+        val iterator = strokes.iterator()
+        var index = 0
+        while (iterator.hasNext()) {
+            val stroke = iterator.next()
+            if (!stroke.isLocked && RectF.intersects(stroke.bounds, rect)) {
+                removed.add(stroke to index)
+                iterator.remove()
+            }
+            index++
+        }
+        if (removed.isNotEmpty()) {
+            undoRedoManager.recordAction(UndoRedoManager.CanvasAction.BatchRemove(removed))
+            notifyUndoRedoState()
+            onStrokeChangedListener?.invoke()
+            invalidate()
+        }
+    }
+
     private fun eraseAt(x: Float, y: Float, radius: Float, isStrokeEraser: Boolean) {
         val removed = mutableListOf<Pair<DrawingPath, Int>>()
         val iterator = strokes.iterator()
@@ -545,7 +658,7 @@ class DrawingCanvasView @JvmOverloads constructor(
 
         while (iterator.hasNext()) {
             val stroke = iterator.next()
-            if (stroke.intersects(x, y, radius)) {
+            if (!stroke.isLocked && stroke.intersects(x, y, radius)) {
                 removed.add(stroke to index)
                 iterator.remove()
             }
@@ -562,6 +675,15 @@ class DrawingCanvasView @JvmOverloads constructor(
             onStrokeChangedListener?.invoke()
             invalidate()
         }
+    }
+
+    private fun sampleColorAt(x: Float, y: Float): Int {
+        for (stroke in strokes.reversed()) {
+            if (stroke.intersects(x, y, 15f)) {
+                return stroke.color
+            }
+        }
+        return currentTemplate.backgroundColor
     }
 
     fun addTextAnnotation(text: String, x: Float, y: Float, fontSize: Float = 24f, color: Int = Color.BLACK) {

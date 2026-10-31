@@ -13,7 +13,14 @@ enum class ShapeType {
     ARROW,
     RECTANGLE,
     CIRCLE,
-    TRIANGLE
+    TRIANGLE,
+    STAR
+}
+
+enum class RulerType {
+    STRAIGHT_EDGE,
+    TRIANGLE,
+    PROTRACTOR
 }
 
 sealed class DrawingTool {
@@ -26,13 +33,14 @@ sealed class DrawingTool {
     ) : DrawingTool()
 
     data class Highlighter(
-        val color: Int = Color.argb(90, 255, 235, 59), // Translucent yellow
+        val color: Int = Color.argb(90, 255, 235, 59),
         val width: Float = 24.0f
     ) : DrawingTool()
 
     data class Eraser(
         val radius: Float = 24.0f,
-        val isStrokeEraser: Boolean = true // True deletes entire stroke, False deletes segments
+        val isStrokeEraser: Boolean = true,
+        val autoDeselect: Boolean = false
     ) : DrawingTool()
 
     object Lasso : DrawingTool()
@@ -49,4 +57,6 @@ sealed class DrawingTool {
         val fontSize: Float = 20f,
         val color: Int = Color.BLACK
     ) : DrawingTool()
+
+    object EyeDropper : DrawingTool()
 }

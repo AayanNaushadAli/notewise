@@ -7,8 +7,8 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
 @Database(
-    entities = [NotebookEntity::class, PageEntity::class, FolderEntity::class],
-    version = 2,
+    entities = [NotebookEntity::class, PageEntity::class, FolderEntity::class, StickerEntity::class],
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(StrokeConverter::class)
@@ -16,6 +16,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun notebookDao(): NotebookDao
     abstract fun pageDao(): PageDao
     abstract fun folderDao(): FolderDao
+    abstract fun stickerDao(): StickerDao
 
     companion object {
         @Volatile

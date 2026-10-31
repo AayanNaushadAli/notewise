@@ -27,12 +27,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.notewise.clone.NoteApplication
 import com.notewise.clone.core.audio.AudioRecordManager
 import com.notewise.clone.core.canvas.DrawingCanvasView
-import com.notewise.clone.core.canvas.DrawingPath
 import com.notewise.clone.core.canvas.DrawingTool
 import com.notewise.clone.core.canvas.PenType
+import com.notewise.clone.core.canvas.RulerType
 import com.notewise.clone.core.canvas.ShapeType
 import com.notewise.clone.core.database.PageEntity
+import com.notewise.clone.core.database.StickerEntity
 import com.notewise.clone.core.database.StrokeConverter
+import com.notewise.clone.core.markdown.MilkdownEditorView
 import com.notewise.clone.core.pdf.PdfManager
 import com.notewise.clone.core.template.PageTemplate
 import kotlinx.coroutines.delay
@@ -55,6 +57,7 @@ fun EditorScreen(
 
     // Pages state from Room DB
     val pages by db.pageDao().getPagesForNotebook(notebookId).collectAsState(initial = emptyList())
+    val stickers by db.stickerDao().getAllStickers().collectAsState(initial = emptyList())
     var currentPageIndex by remember { mutableIntStateOf(0) }
 
     // Canvas view ref
@@ -65,6 +68,7 @@ fun EditorScreen(
 
     // Current tool settings
     var selectedToolType by remember { mutableStateOf("pen") }
+    var previousPenTool by remember { mutableStateOf("pen") }
     var selectedPenType by remember { mutableStateOf(PenType.FOUNTAIN) }
     var selectedColor by remember { mutableIntStateOf(AndroidColor.BLACK) }
     var selectedPenWidth by remember { mutableFloatStateOf(3.5f) }
@@ -75,14 +79,22 @@ fun EditorScreen(
 
     var selectedEraserRadius by remember { mutableFloatStateOf(24.0f) }
     var isStrokeEraser by remember { mutableStateOf(true) }
+    var isEraserAutoDeselect by remember { mutableStateOf(true) }
+
+    // Smart Features
+    var isAutoShapeEnabled by remember { mutableStateOf(true) }
+    var isScribbleToEraseEnabled by remember { mutableStateOf(true) }
+    var isMarkdownMode by remember { mutableStateOf(false) }
 
     var selectedShapeType by remember { mutableStateOf(ShapeType.RECTANGLE) }
     var isRulerEnabled by remember { mutableStateOf(false) }
+    var selectedRulerType by remember { mutableStateOf(RulerType.STRAIGHT_EDGE) }
     var isStylusOnlyMode by remember { mutableStateOf(false) }
 
     // Dialogs & sheets
     var showTemplateDialog by remember { mutableStateOf(false) }
     var showPageOverviewSheet by remember { mutableStateOf(false) }
+    var showStickerSheet by remember { mutableStateOf(false) }
     var showTextEntryDialog by remember { mutableStateOf(false) }
     var textEntryCoord by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var textInput by remember { mutableStateOf("") }
@@ -96,7 +108,7 @@ fun EditorScreen(
     var audioPlaybackTotal by remember { mutableIntStateOf(0) }
     var hasAudioFile by remember { mutableStateOf(false) }
 
-    // Initialize Page 1 in DB if notebook is brand new
+    // Initialize Page 1 in DB if brand new
     LaunchedEffect(pages) {
         if (pages.isEmpty()) {
             val initialPage = PageEntity(
@@ -110,7 +122,6 @@ fun EditorScreen(
         }
     }
 
-    // Load active page into canvas when pageIndex changes or page loads
     val currentPage = pages.getOrNull(currentPageIndex)
     LaunchedEffect(currentPage?.id) {
         currentPage?.let { page ->
@@ -118,13 +129,11 @@ fun EditorScreen(
             val template = PageTemplate.fromString(page.templateType, page.backgroundColor)
             canvasRef?.loadPageData(strokes, template)
 
-            // Check if audio file exists for this page
             val audioFile = File(context.getExternalFilesDir(null), "audio_${page.id}.m4a")
             hasAudioFile = audioFile.exists() && audioFile.length() > 0
         }
     }
 
-    // Audio Recording Timer ticker
     LaunchedEffect(isAudioRecording) {
         while (isAudioRecording) {
             audioRecordingDurationMs = audioRecordManager.getRecordingElapsedMs()
@@ -132,7 +141,6 @@ fun EditorScreen(
         }
     }
 
-    // Save strokes helper
     fun saveCurrentPageStrokes() {
         val page = currentPage ?: return
         val canvas = canvasRef ?: return
@@ -142,23 +150,35 @@ fun EditorScreen(
         }
     }
 
-    // Sync active tool to canvas
     fun updateCanvasTool() {
         val canvas = canvasRef ?: return
+        canvas.isAutoShapeEnabled = isAutoShapeEnabled
+        canvas.isScribbleToEraseEnabled = isScribbleToEraseEnabled
+        canvas.isEraserAutoDeselect = isEraserAutoDeselect
+        canvas.rulerGuide.isEnabled = isRulerEnabled
+        canvas.rulerGuide.rulerType = selectedRulerType
+
         when (selectedToolType) {
-            "pen" -> canvas.currentTool = DrawingTool.Pen(
-                color = selectedColor,
-                width = selectedPenWidth,
-                opacity = selectedPenOpacity,
-                penType = selectedPenType
-            )
-            "highlighter" -> canvas.currentTool = DrawingTool.Highlighter(
-                color = selectedHighlighterColor,
-                width = selectedHighlighterWidth
-            )
+            "pen" -> {
+                previousPenTool = "pen"
+                canvas.currentTool = DrawingTool.Pen(
+                    color = selectedColor,
+                    width = selectedPenWidth,
+                    opacity = selectedPenOpacity,
+                    penType = selectedPenType
+                )
+            }
+            "highlighter" -> {
+                previousPenTool = "highlighter"
+                canvas.currentTool = DrawingTool.Highlighter(
+                    color = selectedHighlighterColor,
+                    width = selectedHighlighterWidth
+                )
+            }
             "eraser" -> canvas.currentTool = DrawingTool.Eraser(
                 radius = selectedEraserRadius,
-                isStrokeEraser = isStrokeEraser
+                isStrokeEraser = isStrokeEraser,
+                autoDeselect = isEraserAutoDeselect
             )
             "lasso" -> canvas.currentTool = DrawingTool.Lasso
             "shape" -> canvas.currentTool = DrawingTool.Shape(
@@ -167,10 +187,11 @@ fun EditorScreen(
                 width = selectedPenWidth
             )
             "text" -> canvas.currentTool = DrawingTool.Text()
+            "eyedropper" -> canvas.currentTool = DrawingTool.EyeDropper
         }
     }
 
-    LaunchedEffect(selectedToolType, selectedPenType, selectedColor, selectedPenWidth, selectedPenOpacity, selectedHighlighterWidth, selectedHighlighterColor, selectedEraserRadius, isStrokeEraser, selectedShapeType) {
+    LaunchedEffect(selectedToolType, selectedPenType, selectedColor, selectedPenWidth, selectedPenOpacity, selectedHighlighterWidth, selectedHighlighterColor, selectedEraserRadius, isStrokeEraser, isEraserAutoDeselect, isAutoShapeEnabled, isScribbleToEraseEnabled, selectedShapeType, isRulerEnabled, selectedRulerType) {
         updateCanvasTool()
     }
 
@@ -188,7 +209,6 @@ fun EditorScreen(
                     title = {
                         Column {
                             Text(notebookTitle, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                            // Page indicator pill: "< Page 1 / 3 >"
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
@@ -220,7 +240,6 @@ fun EditorScreen(
                         }
                     },
                     actions = {
-                        // Previous Page button
                         IconButton(
                             onClick = {
                                 if (currentPageIndex > 0) {
@@ -233,14 +252,12 @@ fun EditorScreen(
                             Icon(Icons.AutoMirrored.Filled.NavigateBefore, contentDescription = "Previous Page")
                         }
 
-                        // Next Page / Add Page button
                         IconButton(
                             onClick = {
                                 saveCurrentPageStrokes()
                                 if (currentPageIndex < pages.size - 1) {
                                     currentPageIndex++
                                 } else {
-                                    // Add new page at end
                                     scope.launch {
                                         val newPageIndex = pages.size
                                         val newPage = PageEntity(
@@ -259,6 +276,15 @@ fun EditorScreen(
                             Icon(
                                 if (currentPageIndex < pages.size - 1) Icons.AutoMirrored.Filled.NavigateNext else Icons.Default.Add,
                                 contentDescription = "Next or Add Page"
+                            )
+                        }
+
+                        // Markdown Toggle
+                        IconButton(onClick = { isMarkdownMode = !isMarkdownMode }) {
+                            Icon(
+                                if (isMarkdownMode) Icons.Default.Draw else Icons.Default.Notes,
+                                contentDescription = "Toggle Markdown Note",
+                                tint = if (isMarkdownMode) MaterialTheme.colorScheme.primary else Color.Gray
                             )
                         }
 
@@ -303,12 +329,10 @@ fun EditorScreen(
                             }
                         }
 
-                        // Page Template Dialog Button
                         IconButton(onClick = { showTemplateDialog = true }) {
                             Icon(Icons.Default.DashboardCustomize, contentDescription = "Template")
                         }
 
-                        // Overflow menu: Export PDF, Stylus mode
                         IconButton(onClick = { showOverflowMenu = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "More options")
                         }
@@ -343,7 +367,7 @@ fun EditorScreen(
                             )
 
                             DropdownMenuItem(
-                                text = { Text(if (isStylusOnlyMode) "Stylus Only: ON" else "Stylus Only: OFF") },
+                                text = { Text(if (isStylusOnlyMode) "Stylus Palm Rejection: ON" else "Stylus Palm Rejection: OFF") },
                                 leadingIcon = { Icon(Icons.Default.Draw, contentDescription = null) },
                                 onClick = {
                                     isStylusOnlyMode = !isStylusOnlyMode
@@ -360,7 +384,7 @@ fun EditorScreen(
                     )
                 )
 
-                // Audio Recording Bar / Playback Bar
+                // Audio Recording & Playback Bar
                 if (isAudioRecording) {
                     Surface(
                         color = Color.Red.copy(alpha = 0.1f),
@@ -461,125 +485,179 @@ fun EditorScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // High-Performance Vector Canvas
-            AndroidView(
-                factory = { ctx ->
-                    DrawingCanvasView(ctx).apply {
-                        canvasRef = this
-                        this.isStylusOnlyMode = isStylusOnlyMode
-                        this.onUndoRedoStateChanged = { u, r ->
-                            canUndo = u
-                            canRedo = r
+            if (isMarkdownMode) {
+                // Real Milkdown Markdown Editor View
+                AndroidView(
+                    factory = { ctx ->
+                        MilkdownEditorView(ctx).apply {
+                            setMarkdown("# $notebookTitle\n\nStart typing rich-text markdown notes here...")
                         }
-                        this.onStrokeChangedListener = {
-                            hasLassoSelection = this.selectedStrokes.isNotEmpty()
-                            saveCurrentPageStrokes()
-                        }
-                        this.onTextToolTapped = { x, y ->
-                            textEntryCoord = x to y
-                            showTextEntryDialog = true
-                        }
-                        this.currentAudioTimestampMsProvider = {
-                            if (audioRecordManager.isRecording) audioRecordManager.getRecordingElapsedMs() else null
-                        }
-                        this.onStrokeTapped = { stroke ->
-                            stroke.audioTimestampMs?.let { ms ->
-                                audioRecordManager.seekTo(ms.toInt())
-                                Toast.makeText(context, "Seek audio to ${ms / 1000}s", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                // High-Performance Vector Canvas
+                AndroidView(
+                    factory = { ctx ->
+                        DrawingCanvasView(ctx).apply {
+                            canvasRef = this
+                            this.isStylusOnlyMode = isStylusOnlyMode
+                            this.isAutoShapeEnabled = isAutoShapeEnabled
+                            this.isScribbleToEraseEnabled = isScribbleToEraseEnabled
+                            this.isEraserAutoDeselect = isEraserAutoDeselect
+                            this.onUndoRedoStateChanged = { u, r ->
+                                canUndo = u
+                                canRedo = r
+                            }
+                            this.onStrokeChangedListener = {
+                                hasLassoSelection = this.selectedStrokes.isNotEmpty()
+                                saveCurrentPageStrokes()
+                            }
+                            this.onTextToolTapped = { x, y ->
+                                textEntryCoord = x to y
+                                showTextEntryDialog = true
+                            }
+                            this.onColorSampled = { sampledColor ->
+                                selectedColor = sampledColor
+                                selectedToolType = previousPenTool
+                                Toast.makeText(context, "Sampled Color", Toast.LENGTH_SHORT).show()
+                            }
+                            this.onEraserFinished = {
+                                selectedToolType = previousPenTool
+                            }
+                            this.currentAudioTimestampMsProvider = {
+                                if (audioRecordManager.isRecording) audioRecordManager.getRecordingElapsedMs() else null
+                            }
+                            this.onStrokeTapped = { stroke ->
+                                stroke.audioTimestampMs?.let { ms ->
+                                    audioRecordManager.seekTo(ms.toInt())
+                                    Toast.makeText(context, "Seek audio to ${ms / 1000}s", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
 
-            // Floating Notewise Toolbox at bottom
-            FloatingToolbox(
-                selectedTool = selectedToolType,
-                selectedPenType = selectedPenType,
-                selectedColor = selectedColor,
-                selectedPenWidth = selectedPenWidth,
-                selectedPenOpacity = selectedPenOpacity,
-                selectedHighlighterWidth = selectedHighlighterWidth,
-                selectedHighlighterColor = selectedHighlighterColor,
-                selectedEraserRadius = selectedEraserRadius,
-                isStrokeEraser = isStrokeEraser,
-                selectedShapeType = selectedShapeType,
-                isRulerEnabled = isRulerEnabled,
-                hasLassoSelection = hasLassoSelection,
-                canUndo = canUndo,
-                canRedo = canRedo,
-                onSelectTool = { tool ->
-                    selectedToolType = tool
-                    updateCanvasTool()
-                },
-                onPenTypeChange = { pt ->
-                    selectedPenType = pt
-                    updateCanvasTool()
-                },
-                onColorChange = { col ->
-                    selectedColor = col
-                    updateCanvasTool()
-                },
-                onPenWidthChange = { w ->
-                    selectedPenWidth = w
-                    updateCanvasTool()
-                },
-                onPenOpacityChange = { op ->
-                    selectedPenOpacity = op
-                    updateCanvasTool()
-                },
-                onHighlighterWidthChange = { w ->
-                    selectedHighlighterWidth = w
-                    updateCanvasTool()
-                },
-                onHighlighterColorChange = { col ->
-                    selectedHighlighterColor = col
-                    updateCanvasTool()
-                },
-                onEraserRadiusChange = { r ->
-                    selectedEraserRadius = r
-                    updateCanvasTool()
-                },
-                onToggleStrokeEraser = { se ->
-                    isStrokeEraser = se
-                    updateCanvasTool()
-                },
-                onShapeTypeChange = { st ->
-                    selectedShapeType = st
-                    updateCanvasTool()
-                },
-                onToggleRuler = {
-                    isRulerEnabled = !isRulerEnabled
-                    canvasRef?.isRulerEnabled = isRulerEnabled
-                    canvasRef?.invalidate()
-                },
-                onLassoDelete = {
-                    canvasRef?.deleteSelectedStrokes()
-                    hasLassoSelection = false
-                },
-                onLassoDuplicate = {
-                    canvasRef?.duplicateSelectedStrokes()
-                },
-                onLassoRecolor = { color ->
-                    canvasRef?.recolorSelectedStrokes(color)
-                },
-                onClearCanvas = {
-                    canvasRef?.clearCanvas()
-                },
-                onUndo = {
-                    canvasRef?.undo()
-                },
-                onRedo = {
-                    canvasRef?.redo()
-                },
-                onResetZoom = {
-                    canvasRef?.resetZoom()
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 20.dp)
-            )
+                // Floating Notewise Toolbox at bottom
+                FloatingToolbox(
+                    selectedTool = selectedToolType,
+                    selectedPenType = selectedPenType,
+                    selectedColor = selectedColor,
+                    selectedPenWidth = selectedPenWidth,
+                    selectedPenOpacity = selectedPenOpacity,
+                    selectedHighlighterWidth = selectedHighlighterWidth,
+                    selectedHighlighterColor = selectedHighlighterColor,
+                    selectedEraserRadius = selectedEraserRadius,
+                    isStrokeEraser = isStrokeEraser,
+                    isEraserAutoDeselect = isEraserAutoDeselect,
+                    isAutoShapeEnabled = isAutoShapeEnabled,
+                    isScribbleToEraseEnabled = isScribbleToEraseEnabled,
+                    selectedShapeType = selectedShapeType,
+                    isRulerEnabled = isRulerEnabled,
+                    selectedRulerType = selectedRulerType,
+                    hasLassoSelection = hasLassoSelection,
+                    canUndo = canUndo,
+                    canRedo = canRedo,
+                    onSelectTool = { tool ->
+                        selectedToolType = tool
+                        updateCanvasTool()
+                    },
+                    onPenTypeChange = { pt ->
+                        selectedPenType = pt
+                        updateCanvasTool()
+                    },
+                    onColorChange = { col ->
+                        selectedColor = col
+                        updateCanvasTool()
+                    },
+                    onPenWidthChange = { w ->
+                        selectedPenWidth = w
+                        updateCanvasTool()
+                    },
+                    onPenOpacityChange = { op ->
+                        selectedPenOpacity = op
+                        updateCanvasTool()
+                    },
+                    onHighlighterWidthChange = { w ->
+                        selectedHighlighterWidth = w
+                        updateCanvasTool()
+                    },
+                    onHighlighterColorChange = { col ->
+                        selectedHighlighterColor = col
+                        updateCanvasTool()
+                    },
+                    onEraserRadiusChange = { r ->
+                        selectedEraserRadius = r
+                        updateCanvasTool()
+                    },
+                    onToggleStrokeEraser = { se ->
+                        isStrokeEraser = se
+                        updateCanvasTool()
+                    },
+                    onToggleEraserAutoDeselect = {
+                        isEraserAutoDeselect = !isEraserAutoDeselect
+                        canvasRef?.isEraserAutoDeselect = isEraserAutoDeselect
+                    },
+                    onToggleAutoShape = {
+                        isAutoShapeEnabled = !isAutoShapeEnabled
+                        canvasRef?.isAutoShapeEnabled = isAutoShapeEnabled
+                    },
+                    onToggleScribbleToErase = {
+                        isScribbleToEraseEnabled = !isScribbleToEraseEnabled
+                        canvasRef?.isScribbleToEraseEnabled = isScribbleToEraseEnabled
+                    },
+                    onShapeTypeChange = { st ->
+                        selectedShapeType = st
+                        updateCanvasTool()
+                    },
+                    onToggleRuler = {
+                        isRulerEnabled = !isRulerEnabled
+                        canvasRef?.rulerGuide?.isEnabled = isRulerEnabled
+                        canvasRef?.invalidate()
+                    },
+                    onRulerTypeChange = { rt ->
+                        selectedRulerType = rt
+                        canvasRef?.rulerGuide?.rulerType = rt
+                        canvasRef?.invalidate()
+                    },
+                    onLassoDelete = {
+                        canvasRef?.deleteSelectedStrokes()
+                        hasLassoSelection = false
+                    },
+                    onLassoDuplicate = {
+                        canvasRef?.duplicateSelectedStrokes()
+                    },
+                    onLassoRecolor = { color ->
+                        canvasRef?.recolorSelectedStrokes(color)
+                    },
+                    onLassoLockToggle = {
+                        val canvas = canvasRef ?: return@FloatingToolbox
+                        val anyUnlocked = canvas.selectedStrokes.any { !it.isLocked }
+                        canvas.lockSelectedStrokes(anyUnlocked)
+                        hasLassoSelection = false
+                        Toast.makeText(context, if (anyUnlocked) "Locked selected strokes" else "Unlocked", Toast.LENGTH_SHORT).show()
+                    },
+                    onOpenStickerLibrary = {
+                        showStickerSheet = true
+                    },
+                    onClearCanvas = {
+                        canvasRef?.clearCanvas()
+                    },
+                    onUndo = {
+                        canvasRef?.undo()
+                    },
+                    onRedo = {
+                        canvasRef?.redo()
+                    },
+                    onResetZoom = {
+                        canvasRef?.resetZoom()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 18.dp)
+                )
+            }
         }
     }
 
@@ -659,6 +737,32 @@ fun EditorScreen(
                 }
             },
             onDismiss = { showPageOverviewSheet = false }
+        )
+    }
+
+    // Sticker & Component Library Sheet
+    if (showStickerSheet) {
+        StickerLibrarySheet(
+            stickers = stickers,
+            hasLassoSelection = hasLassoSelection,
+            onSaveCurrentSelection = { name, tag ->
+                val canvas = canvasRef ?: return@StickerLibrarySheet
+                val json = strokeConverter.fromStrokesList(canvas.selectedStrokes)
+                scope.launch {
+                    val sticker = StickerEntity(name = name, tag = tag, strokeJson = json)
+                    db.stickerDao().insertSticker(sticker)
+                    Toast.makeText(context, "Saved to Library as '$name'!", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onSelectSticker = { sticker ->
+                val stickerStrokes = strokeConverter.toStrokesList(sticker.strokeJson)
+                canvasRef?.insertSticker(stickerStrokes, 300f, 400f)
+                Toast.makeText(context, "Inserted '${sticker.name}'", Toast.LENGTH_SHORT).show()
+            },
+            onDeleteSticker = { id ->
+                scope.launch { db.stickerDao().deleteSticker(id) }
+            },
+            onDismiss = { showStickerSheet = false }
         )
     }
 

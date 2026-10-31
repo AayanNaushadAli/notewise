@@ -20,7 +20,8 @@ data class SerializedPath(
     val textContent: String? = null,
     val fontSize: Float? = null,
     val createdAt: Long,
-    val audioTimestampMs: Long? = null
+    val audioTimestampMs: Long? = null,
+    val isLocked: Boolean = false
 )
 
 class StrokeConverter {
@@ -59,6 +60,9 @@ class StrokeConverter {
                     textContent = t.text
                     fontSize = t.fontSize
                 }
+                else -> {
+                    toolTypeStr = "pen"
+                }
             }
 
             SerializedPath(
@@ -72,7 +76,8 @@ class StrokeConverter {
                 textContent = textContent,
                 fontSize = fontSize,
                 createdAt = s.createdAt,
-                audioTimestampMs = s.audioTimestampMs
+                audioTimestampMs = s.audioTimestampMs,
+                isLocked = s.isLocked
             )
         }
         return gson.toJson(serialized)
@@ -110,16 +115,16 @@ class StrokeConverter {
                 }
             }
 
-            val path = DrawingPath(
+            DrawingPath(
                 id = raw.id,
                 points = raw.points.toMutableList(),
                 tool = tool,
                 color = raw.color,
                 strokeWidth = raw.strokeWidth,
                 createdAt = raw.createdAt,
-                audioTimestampMs = raw.audioTimestampMs
+                audioTimestampMs = raw.audioTimestampMs,
+                isLocked = raw.isLocked
             )
-            path
         }
     }
 }
